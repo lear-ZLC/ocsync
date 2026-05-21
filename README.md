@@ -36,7 +36,7 @@ The script connects to your database by wrapping `psql` commands inside an `ssh`
 ## 📥 Installation
 
 ```bash
-curl -L https://github.com/ogzhnozlci/ocsync/raw/main/ocsync -o ocsync
+curl -L https://github.com/lear-ZLC/ocsync/raw/main/ocsync -o ocsync
 chmod +x ocsync
 sudo mv ocsync /usr/local/bin/ocsync
 ```
@@ -95,4 +95,4 @@ Edit the `ocsync` script to match your environment:
 
 ## 📄 License
 
-MIT © 2026 ogzhnozlci
+MIT © 2026 lear-ZLC
