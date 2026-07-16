@@ -36,10 +36,13 @@ class OcsyncTests(unittest.TestCase):
         ocsync.PUBLIC_KEY = self.previous_public
         self.tmp.cleanup()
 
-    def test_profile_selection_rejects_unknown_values(self):
+    def test_profile_selection_rejects_unknown_and_removed_values(self):
         self.assertEqual(ocsync.profile_names("core,omo"), ("core", "omo"))
+        self.assertEqual(set(ocsync.PROFILES), {"core", "omo", "plugins", "agents", "skills"})
         with self.assertRaises(ValueError):
             ocsync.profile_names("core,secrets")
+        with self.assertRaises(ValueError):
+            ocsync.profile_names("core,commands")
 
     def test_collect_local_only_collects_requested_profile_and_skips_node_modules(self):
         (ocsync.OC_DIR / "opencode.json").write_text('{"model":"x"}')

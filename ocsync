@@ -31,14 +31,14 @@ AUTH_PATH = DATA_DIR / "auth.json"
 AUTH_ARTIFACT = "__auth__/auth.json"
 
 # Add only product-owned configuration. Backups and node_modules are deliberately excluded.
+# Deliberately narrow: only portable OpenCode/OMO customisation and explicit auth.
+# Commands, TUI preferences, package manifests, backups and arbitrary local files are not sync state.
 PROFILES = {
-    "core": ["opencode.json", "opencode.jsonc", ".opencode/opencode.json", "dcp.jsonc", "package.json"],
+    "core": ["opencode.json", "opencode.jsonc", ".opencode/opencode.json"],
     "omo": ["oh-my-openagent.json", "oh-my-openagent.json.migrations.json"],
     "plugins": [".opencode/plugins", "plugins"],
     "agents": ["agents"],
     "skills": ["skills"],
-    "commands": ["command", "commands"],
-    "ui": ["tui.json"],
 }
 DEFAULT_PROFILES = tuple(PROFILES)
 C = {"r":"\033[0;31m", "g":"\033[0;32m", "y":"\033[1;33m", "c":"\033[0;36m", "b":"\033[1m", "n":"\033[0m"}
@@ -340,10 +340,15 @@ def diff_cmd(args):
 def status(_args):
     ensure_schema()
     print(f"{C['c']}ocsync v3{C['n']} — secure config + credential metadata")
-    rows = pg("SELECT h.hostname, COUNT(c.filepath), MAX(c.updated_at)::text, h.key_fingerprint FROM ocsync_hosts h LEFT JOIN ocsync_configs c ON c.hostname=h.hostname GROUP BY h.hostname, h.key_fingerprint ORDER BY h.hostname;")
-    for row in rows:
-        host, count, updated, fingerprint = row.split("|", 3)
-        print(f"  {host}: {count} config files, key {fingerprint}, last {updated or 'never'}")
+    host_rows = pg("SELECT hostname, key_fingerprint FROM ocsync_hosts ORDER BY hostname;")
+    for row in host_rows:
+        host, fingerprint = row.split("|", 1)
+        scoped = {
+            filepath: info for filepath, info in parse_rows(rows_for_host(host)).items()
+            if any(filepath == root or filepath.startswith(root + "/") for paths in PROFILES.values() for root in paths)
+        }
+        updated = max((info["updated_at"] for info in scoped.values()), default="")
+        print(f"  {host}: {len(scoped)} in-scope files, key {fingerprint}, last {updated or 'never'}")
 
 
 def queue_job(source, target, profiles, include_auth):

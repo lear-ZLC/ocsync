@@ -10,15 +10,13 @@ Configuration is grouped into opt-in profiles:
 
 | Profile | Paths under `~/.config/opencode` |
 |---|---|
-| `core` | `opencode.json`, `opencode.jsonc`, `.opencode/opencode.json`, `dcp.jsonc`, `package.json` |
+| `core` | `opencode.json`, `opencode.jsonc`, `.opencode/opencode.json` |
 | `omo` | `oh-my-openagent.json`, `oh-my-openagent.json.migrations.json` |
 | `plugins` | `.opencode/plugins/`, `plugins/` |
 | `agents` | `agents/` |
 | `skills` | `skills/` |
-| `commands` | `command/`, `commands/` |
-| `ui` | `tui.json` |
 
-Backups and `node_modules` are deliberately excluded. Select a subset with `--profiles core,omo`.
+This is intentionally the entire sync scope: OpenCode config, OMO config, custom plugins, custom agents, custom skills and explicit encrypted OpenCode auth. Commands, TUI preferences, package manifests, `dcp.jsonc`, backups and `node_modules` are deliberately excluded. Select a subset with `--profiles core,omo`.
 
 ## Credential model
 

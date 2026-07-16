@@ -21,13 +21,25 @@ def q(value): return ocsync.sql_quote(value)
 def esc(value): return html.escape(str(value))
 
 def hosts():
-    return [r.split('|') for r in ocsync.pg("SELECT hostname, COUNT(*), COALESCE(MAX(updated_at)::text,'') FROM ocsync_configs GROUP BY hostname ORDER BY hostname;")]
+    names = ocsync.pg("SELECT DISTINCT hostname FROM ocsync_configs ORDER BY hostname;")
+    result = []
+    for host in names:
+        scoped = files(host)
+        updated = max((item[1].get("updated_at", "") for item in scoped), default="")
+        result.append([host, str(len(scoped)), updated])
+    return result
+
+def in_scope(path):
+    roots = [item for profile in ocsync.PROFILES.values() for item in profile]
+    return any(path == root or path.startswith(root + "/") for root in roots)
+
 
 def files(host):
-    return [(p, v) for p, v in ocsync.parse_rows(ocsync.rows_for_host(host)).items()]
+    return [(p, v) for p, v in ocsync.parse_rows(ocsync.rows_for_host(host)).items() if in_scope(p)]
 
 def row(host, path):
-    if not ocsync.is_safe_relative(path): raise ValueError('Unsafe filepath')
+    if not ocsync.is_safe_relative(path) or not in_scope(path):
+        raise ValueError('File is outside the supported sync scope')
     return ocsync.parse_rows(ocsync.pg("SELECT filepath, content, checksum, updated_at FROM ocsync_configs WHERE hostname="+q(host)+" AND filepath="+q(path)+"; ")).get(path)
 
 def enqueue(source, target, profiles, auth=False, filepaths=''):
