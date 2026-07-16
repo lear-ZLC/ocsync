@@ -1,98 +1,144 @@
 # ocsync
 
-**Sync your OpenCode configs across machines via a central PostgreSQL store.**
+Secure sync for OpenCode and Oh My OpenAgent (OMO) configuration across machines.
 
-`ocsync` is a lightweight Python utility designed to synchronize [OpenCode](https://opencode.ai) configuration files, plugins, custom agents, skills, and credentials between multiple machines using a central PostgreSQL database accessed securely over SSH.
+`ocsync` keeps ordinary configuration snapshots in the existing central PostgreSQL store. Credentials follow a separate path: they are encrypted for each destination machine before leaving the source. The database and dashboard never receive or display plaintext credentials.
 
-## 🚀 Features
+## What it syncs
 
-- **Auto-discovery**: Automatically finds and syncs standard OpenCode configuration paths.
-- **Base64 Encoding**: Safe transport of binary or special character data via Base64.
-- **Diff Before Apply**: Review changes with a side-by-side diff before overwriting local files.
-- **Interactive Resolution**: Choose which host to pull from and confirm updates.
-- **SSH/Tailscale Native**: Works anywhere you have SSH access; no local network discovery or complex setup needed.
-- **Zero Dependencies**: Single-file script using only the Python standard library.
+Configuration is grouped into opt-in profiles:
 
-## 🛠 Architecture
+| Profile | Paths under `~/.config/opencode` |
+|---|---|
+| `core` | `opencode.json`, `opencode.jsonc`, `.opencode/opencode.json`, `dcp.jsonc`, `package.json` |
+| `omo` | `oh-my-openagent.json`, `oh-my-openagent.json.migrations.json` |
+| `plugins` | `.opencode/plugins/`, `plugins/` |
+| `agents` | `agents/` |
+| `skills` | `skills/` |
+| `commands` | `command/`, `commands/` |
+| `ui` | `tui.json` |
+
+Backups and `node_modules` are deliberately excluded. Select a subset with `--profiles core,omo`.
+
+## Credential model
+
+OpenCode credentials are stored locally in:
 
 ```text
-  [ Local Machine ]             [ Remote Server ]
-  |               |             |               |
-  | ocsync push --|---- SSH --->| docker exec   |
-  |               |             |   psql        |
-  | ocsync pull <-|---- SSH ----|     |         |
-  [               ]             [ PostgreSQL DB ]
+~/.local/share/opencode/auth.json
 ```
 
-The script connects to your database by wrapping `psql` commands inside an `ssh` call, typically targeting a PostgreSQL instance running in Docker on a management host (like Vulcan).
+They are **not** part of normal config sync. Credential sync is explicit (`--include-auth`) and works only after every destination machine has registered a public key.
 
-## 📋 Prerequisites
+- Each machine creates an RSA-3072 keypair at `~/.config/ocsync/identity.pem` (mode `0600`).
+- The private key never leaves its machine.
+- The source encrypts `auth.json` separately for every recipient public key using RSA-OAEP/SHA-256.
+- PostgreSQL stores encrypted envelopes only.
+- The dashboard shows only host metadata, key fingerprint and job state — never config contents or credentials.
+- Decryption happens only on the destination machine, where `auth.json` is written mode `0600`.
 
-- **Python 3.8+**
-- **SSH access** to a host that can reach your PostgreSQL database.
-- **PostgreSQL** table initialized (see Configuration).
-- The `psql` client installed on the remote host (or available via `docker exec`).
+Treat a credential push as a sensitive action: choose the recipients intentionally and only sync between trusted machines.
 
-## 📥 Installation
+## Requirements
+
+- Python 3.8+
+- `openssl`
+- SSH alias `vulcan`
+- Remote `shared-postgres` container with the `memory_gateway` database
+
+The v3 script creates its additional tables (`ocsync_hosts`, `ocsync_secret_envelopes`, `ocsync_jobs`) automatically. Existing `ocsync_configs` data remains compatible.
+
+## Quick start
+
+On **each trusted machine**:
 
 ```bash
-curl -L https://github.com/lear-ZLC/ocsync/raw/main/ocsync -o ocsync
-chmod +x ocsync
-sudo mv ocsync /usr/local/bin/ocsync
+ocsync init
 ```
 
-## ⚙️ Configuration
+Push standard configuration:
 
-### Database Setup
-
-Run the following SQL on your PostgreSQL instance to create the required table:
-
-```sql
-CREATE TABLE ocsync_configs (
-    id SERIAL PRIMARY KEY,
-    hostname TEXT NOT NULL,
-    filepath TEXT NOT NULL,
-    content TEXT,
-    checksum TEXT,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(hostname, filepath)
-);
+```bash
+ocsync push
 ```
 
-### Script Customization
+Push only OMO and core config:
 
-Edit the `ocsync` script to match your environment:
+```bash
+ocsync push --profiles core,omo
+```
 
-1.  **SSH Target**: Update the `pg()` function's `ssh` command to point to your DB host (default is `vulcan`).
-2.  **Sync Items**: Modify the `SYNC_ITEMS` list to include or exclude specific directories/files:
-    ```python
-    SYNC_ITEMS = [
-        "opencode.json",
-        ".opencode/plugins",
-        "skills",
-        # Add your custom paths here
-    ]
-    ```
+Compare with a host without writing:
 
-## ⚡ Quick Start
+```bash
+ocsync diff macbook-host --profiles core,omo,plugins
+```
 
-- **Check status**: See which hosts have pushed configs and when.
-  ```bash
-  ocsync status
-  ```
-- **Push changes**: Upload your local config to the central store.
-  ```bash
-  ocsync push
-  ```
-- **Pull changes**: Download and apply config from another machine.
-  ```bash
-  ocsync pull
-  ```
-- **Compare**: See differences between your machine and a remote host without applying.
-  ```bash
-  ocsync diff [hostname]
-  ```
+Pull config with an interactive confirmation:
 
-## 📄 License
+```bash
+ocsync pull macbook-host --profiles core,omo
+```
+
+## Credential sync
+
+After every target has run `ocsync init`, the source can create recipient-specific encrypted envelopes:
+
+```bash
+ocsync push --include-auth --auth-recipients desktop-host,laptop-host
+```
+
+On a destination, apply config plus its encrypted credential envelope:
+
+```bash
+ocsync pull source-host --profiles core,omo --include-auth
+```
+
+The credential value is never printed or shown in a diff.
+
+## Local dashboard and queued sync
+
+Start the dashboard on the machine hosting your browser session:
+
+```bash
+ocsync serve
+# http://127.0.0.1:8787
+```
+
+It is local-only by default. It lets you inspect registered hosts, config counts, key fingerprints and queue a selected source → target sync job. It cannot directly write files on another host.
+
+On each target machine, run the local agent when you want it to process queued work:
+
+```bash
+ocsync agent
+```
+
+The target executes its own pull locally. This prevents the web UI/server from gaining remote filesystem write authority.
+
+## Commands
+
+```text
+ocsync init
+ocsync push [--profiles core,omo,...] [--include-auth --auth-recipients host1,host2]
+ocsync diff [source-host] [--profiles core,omo,...]
+ocsync pull [source-host] [--profiles core,omo,...] [--include-auth]
+ocsync status
+ocsync serve [--host 127.0.0.1] [--port 8787]
+ocsync agent
+```
+
+## Security notes
+
+- Do not expose `ocsync serve` directly to a LAN or the internet. The dashboard has no login layer because it is intentionally bound to `127.0.0.1` by default.
+- Do not add `.env`, arbitrary file paths, private keys or browser profile files to profiles.
+- Config snapshot data is still plaintext in PostgreSQL by design. Keep the database private and limit sync profiles to non-secret configuration.
+- Auth is encrypted at rest in PostgreSQL, but anyone holding a destination machine's private key can decrypt envelopes intended for it.
+- Existing queued jobs are executed only after `ocsync agent` runs locally on the target machine.
+
+## License
 
 MIT © 2026 lear-ZLC
+
+## Legacy v2
+
+v2 synced only a small, hardcoded set of files and stored all selected content in the `ocsync_configs` table. v3 keeps that table for non-secret config while adding profile selection, OMO support, host identity registration, recipient-specific auth envelopes and a local queue dashboard.
