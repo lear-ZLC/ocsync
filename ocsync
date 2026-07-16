@@ -356,16 +356,34 @@ def queue_job(source, target, profiles, include_auth):
 
 def agent(args):
     ensure_schema()
-    rows = pg("SELECT id, source_hostname, profiles, include_auth FROM ocsync_jobs WHERE target_hostname=" + sql_quote(HOSTNAME) + " AND status='queued' ORDER BY id;")
+    # Supports legacy profile jobs and ConfigHub-selected-file jobs.
+    pg("ALTER TABLE ocsync_jobs ADD COLUMN IF NOT EXISTS filepaths TEXT;", fetch=False)
+    rows = pg("SELECT id, source_hostname, profiles, include_auth, COALESCE(filepaths,'') FROM ocsync_jobs WHERE target_hostname=" + sql_quote(HOSTNAME) + " AND status='queued' ORDER BY id;")
     if not rows:
         print("No queued sync jobs for this host.")
         return
     for row in rows:
-        job_id, source, profiles, include_auth = row.split("|", 3)
+        job_id, source, profiles, include_auth, filepaths = row.split("|", 4)
         pg(f"UPDATE ocsync_jobs SET status='running' WHERE id={int(job_id)};", fetch=False)
         try:
-            pull(argparse.Namespace(host=source, profiles=profiles, include_auth=include_auth == "t", yes=True), assume_yes=True)
-            pg(f"UPDATE ocsync_jobs SET status='completed', completed_at=NOW(), result='applied locally' WHERE id={int(job_id)};", fetch=False)
+            if filepaths:
+                remote = parse_rows(rows_for_host(source))
+                selected = [path for path in filepaths.split(",") if is_safe_relative(path)]
+                if not selected:
+                    raise RuntimeError("No safe selected file paths in job")
+                for filepath in selected:
+                    info = remote.get(filepath)
+                    if not info:
+                        raise RuntimeError(f"Source file missing: {filepath}")
+                    target = OC_DIR / filepath
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(info["content"], encoding="utf-8")
+                    print(f"  {C['g']}✓{C['n']} {filepath}")
+                result = f"applied {len(selected)} selected file(s) locally"
+            else:
+                pull(argparse.Namespace(host=source, profiles=profiles, include_auth=include_auth == "t", yes=True), assume_yes=True)
+                result = "applied profiles locally"
+            pg(f"UPDATE ocsync_jobs SET status='completed', completed_at=NOW(), result={sql_quote(result)} WHERE id={int(job_id)};", fetch=False)
         except Exception as error:
             pg(f"UPDATE ocsync_jobs SET status='failed', completed_at=NOW(), result={sql_quote(str(error)[:1000])} WHERE id={int(job_id)};", fetch=False)
             print(f"{C['r']}Job {job_id} failed: {error}{C['n']}", file=sys.stderr)
@@ -423,14 +441,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def serve(args):
-    ensure_schema()
-    server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
-    print(f"ocsync dashboard: http://{args.host}:{args.port}")
-    print("Dashboard is intentionally local-only by default.")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    """Launch the ConfigHub dashboard implementation beside this script."""
+    dashboard = Path(__file__).with_name("dashboard.py")
+    if not dashboard.is_file():
+        raise RuntimeError("dashboard.py is missing beside ocsync")
+    subprocess.run([sys.executable, str(dashboard), "--host", args.host, "--port", str(args.port)], check=True)
 
 
 def main():
